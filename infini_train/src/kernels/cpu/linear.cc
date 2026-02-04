@@ -11,25 +11,168 @@
 
 namespace infini_train::kernels::cpu {
 std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other) {
-    // =================================== 作业 ===================================
-    // TODO：实现CPU上的矩阵乘法前向计算
-    // REF:
-    // =================================== 作业 ===================================
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
 
-    auto output = std::make_shared<Tensor>();
-    return {output};
+    // 获取维度
+    int64_t M = input_dims[input_dims.size() - 2];
+    int64_t K = input_dims[input_dims.size() - 1];
+    int64_t N = other_dims[other_dims.size() - 1];
+
+    // 计算 batch 维度
+    std::vector<int64_t> batch_dims;
+    int64_t batch_size = 1;
+
+    int input_batch_rank = input_dims.size() - 2;
+    int other_batch_rank = other_dims.size() - 2;
+    int max_batch_rank = std::max(input_batch_rank, other_batch_rank);
+
+    for (int i = 0; i < max_batch_rank; ++i) {
+        int64_t dim = 1;
+        if (i < input_batch_rank) {
+            dim = input_dims[i];
+        }
+        if (i < other_batch_rank) {
+            if (other_dims[i] != 1 && dim != 1 && other_dims[i] != dim) {
+                LOG(FATAL) << "Incompatible batch dimensions for matmul";
+            }
+            dim = std::max(dim, other_dims[i]);
+        }
+        batch_dims.push_back(dim);
+        batch_size *= dim;
+    }
+
+    // 创建输出张量
+    std::vector<int64_t> output_dims = batch_dims;
+    output_dims.push_back(M);
+    output_dims.push_back(N);
+    auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32);
+    output->Fill<float>(0.0f);
+
+    // 执行矩阵乘法
+    const float *input_ptr = static_cast<const float *>(input->DataPtr());
+    const float *other_ptr = static_cast<const float *>(other->DataPtr());
+    float *output_ptr = static_cast<float *>(output->DataPtr());
+
+    int64_t input_stride = M * K;
+    int64_t other_stride = K * N;
+    int64_t output_stride = M * N;
+
+    for (int64_t b = 0; b < batch_size; ++b) {
+        int64_t input_offset = 0;
+        int64_t other_offset = 0;
+
+        if (input_batch_rank > 0) {
+            input_offset = (b % batch_size) * input_stride;
+        }
+        if (other_batch_rank > 0) {
+            other_offset = (b % batch_size) * other_stride;
+        }
+
+        const float *a = input_ptr + input_offset;
+        const float *b_mat = other_ptr + other_offset;
+        float *c = output_ptr + b * output_stride;
+
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                for (int64_t k = 0; k < K; ++k) {
+                    sum += a[i * K + k] * b_mat[k * N + j];
+                }
+                c[i * N + j] = sum;
+            }
+        }
+    }
+
+    return output;
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
 MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other,
                const std::shared_ptr<Tensor> &grad_output) {
-    // =================================== 作业 ===================================
-    // TODO：实现CPU上的矩阵乘法反向传播
-    // REF:
-    // =================================== 作业 ===================================
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
+    int64_t M = input_dims[input_dims.size() - 2];
+    int64_t K = input_dims[input_dims.size() - 1];
+    int64_t N = other_dims[other_dims.size() - 1];
+
+    // 计算 batch 维度
+    std::vector<int64_t> batch_dims;
+    int64_t batch_size = 1;
+
+    int input_batch_rank = input_dims.size() - 2;
+    int other_batch_rank = other_dims.size() - 2;
+    int max_batch_rank = std::max(input_batch_rank, other_batch_rank);
+
+    for (int i = 0; i < max_batch_rank; ++i) {
+        int64_t dim = 1;
+        if (i < input_batch_rank) {
+            dim = input_dims[i];
+        }
+        if (i < other_batch_rank) {
+            dim = std::max(dim, other_dims[i]);
+        }
+        batch_dims.push_back(dim);
+        batch_size *= dim;
+    }
+
+    // 创建梯度张量
+    auto grad_input = std::make_shared<Tensor>(input_dims, DataType::kFLOAT32);
+    auto grad_other = std::make_shared<Tensor>(other_dims, DataType::kFLOAT32);
+    grad_input->Fill<float>(0.0f);
+    grad_other->Fill<float>(0.0f);
+
+    const float *grad_output_ptr = static_cast<const float *>(grad_output->DataPtr());
+    const float *input_ptr = static_cast<const float *>(input->DataPtr());
+    const float *other_ptr = static_cast<const float *>(other->DataPtr());
+    float *grad_input_ptr = static_cast<float *>(grad_input->DataPtr());
+    float *grad_other_ptr = static_cast<float *>(grad_other->DataPtr());
+
+    int64_t input_stride = M * K;
+    int64_t other_stride = K * N;
+    int64_t output_stride = M * N;
+
+    for (int64_t b = 0; b < batch_size; ++b) {
+        int64_t input_offset = 0;
+        int64_t other_offset = 0;
+
+        if (input_batch_rank > 0) {
+            input_offset = (b % batch_size) * input_stride;
+        }
+        if (other_batch_rank > 0) {
+            other_offset = (b % batch_size) * other_stride;
+        }
+
+        const float *dy = grad_output_ptr + b * output_stride;
+        const float *x = input_ptr + input_offset;
+        const float *w = other_ptr + other_offset;
+        float *dx = grad_input_ptr + input_offset;
+        float *dw = grad_other_ptr + other_offset;
+
+        // grad_input = grad_output @ other^T
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t k = 0; k < K; ++k) {
+                float sum = 0.0f;
+                for (int64_t j = 0; j < N; ++j) {
+                    sum += dy[i * N + j] * w[k * N + j];
+                }
+                dx[i * K + k] += sum;
+            }
+        }
+
+        // grad_other = input^T @ grad_output
+        for (int64_t k = 0; k < K; ++k) {
+            for (int64_t j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                for (int64_t i = 0; i < M; ++i) {
+                    sum += x[i * K + k] * dy[i * N + j];
+                }
+                dw[k * N + j] += sum;
+            }
+        }
+    }
+
     return {grad_input, grad_other};
 }
 

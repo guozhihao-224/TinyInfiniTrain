@@ -299,21 +299,15 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     std::vector<int64_t> new_shape;
 
     // 添加 start 之前的维度
-    for (int64_t i = 0; i < start; ++i) {
-        new_shape.push_back(dims_[i]);
-    }
+    for (int64_t i = 0; i < start; ++i) { new_shape.push_back(dims_[i]); }
 
     // 计算合并后的维度大小
     int64_t flattened_dim = 1;
-    for (int64_t i = start; i <= end; ++i) {
-        flattened_dim *= dims_[i];
-    }
+    for (int64_t i = start; i <= end; ++i) { flattened_dim *= dims_[i]; }
     new_shape.push_back(flattened_dim);
 
     // 添加 end 之后的维度
-    for (int64_t i = end + 1; i < ndim; ++i) {
-        new_shape.push_back(dims_[i]);
-    }
+    for (int64_t i = end + 1; i < ndim; ++i) { new_shape.push_back(dims_[i]); }
 
     // 先确保内存连续，然后使用 View
     return Contiguous()->View(new_shape);
@@ -404,7 +398,7 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
     std::unordered_map<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>> grad_map;
 
     // 初始化：将当前张量加入队列
-    auto self = const_cast<Tensor*>(this)->shared_from_this();
+    auto self = const_cast<Tensor *>(this)->shared_from_this();
     q.push(self);
     visited.insert(self);
     grad_map[self] = gradient;
@@ -433,10 +427,10 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
             auto input_grads = current->grad_fn_->Backward({current_grad});
 
             // 将梯度传递给输入张量
-            const auto& inputs = current->grad_fn_->saved_tensors();
+            const auto &inputs = current->grad_fn_->saved_tensors();
             for (size_t i = 0; i < inputs.size() && i < input_grads.size(); ++i) {
                 if (inputs[i]->requires_grad_) {
-                    auto& input = inputs[i];
+                    auto &input = inputs[i];
 
                     // 累加梯度（多输出场景）
                     if (grad_map.count(input)) {
