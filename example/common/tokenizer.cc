@@ -9,6 +9,8 @@
 
 #include "glog/logging.h"
 
+#include "infini_train/include/nn/functional.h"
+
 namespace infini_train {
 
 constexpr uint32_t kGpt2Eot = 50256;
@@ -69,23 +71,53 @@ int SampleMult(float *probabilities, int n, float coin) {
 }
 
 Tokenizer::Tokenizer(const std::string &filepath) {
-    /* ===================================== 作业 =====================================
-    TODO：实现Tokenizer二进制文件加载
+    std::ifstream ifs(filepath, std::ios::binary);
+    CHECK(ifs.is_open()) << "Failed to open tokenizer file: " << filepath;
 
-    文件格式说明：
-    ----------------------------------------------------------------------------------
-    | HEADER (1024 bytes)                     | VOCAB TABLE                           |
-    | magic(4B) | version(4B) | vocab_size(4B) | reserved(1012B) | token词表数据       |
-    ----------------------------------------------------------------------------------
-    ===================================== 作业 ===================================== */
+    // 读取 Header (1024 bytes)
+    auto header = ReadSeveralBytesFromIfstream(1024, &ifs);
+
+    // 解析 magic
+    magic_number_ = BytesToType<uint32_t>(header, 0);
+
+    // 解析 version
+    uint32_t version = BytesToType<uint32_t>(header, 4);
+
+    // 解析 vocab_size
+    vocab_size_ = BytesToType<uint32_t>(header, 8);
+
+    // 根据 magic 确定 EOT token
+    if (kEotMap.count(magic_number_)) {
+        eot_token_ = kEotMap.at(magic_number_);
+    } else {
+        LOG(WARNING) << "Unknown magic number, using default EOT token";
+        eot_token_ = 50256; // GPT-2 default
+    }
+
+    // 读取词表
+    token_table_.resize(vocab_size_);
+
+    for (uint32_t i = 0; i < vocab_size_; ++i) {
+        // 读取 token 长度 (1 byte)
+        uint8_t len;
+        ifs.read(reinterpret_cast<char *>(&len), 1);
+
+        // 读取 token 内容
+        std::string token(len, '\0');
+        ifs.read(token.data(), len);
+
+        token_table_[i] = token;
+    }
+
+    LOG(INFO) << "Loaded tokenizer: " << filepath
+              << ", vocab_size=" << vocab_size_
+              << ", magic=" << magic_number_;
 }
 
 std::string Tokenizer::Decode(uint32_t token_id) const {
-    /* ===================================== 作业 =====================================
-    TODO：实现token_id到文本的转换
-    功能描述：根据token_id返回对应的文本片段
-    ===================================== 作业 ===================================== */
-    return "";
+    CHECK_LT(token_id, token_table_.size())
+        << "Token ID " << token_id << " out of range [0, " << token_table_.size() << ")";
+    return token_table_[token_id];
 }
 
 void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_size, uint32_t sequence_length,
@@ -104,13 +136,34 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
     std::cout << "The meaning of life is";
 
     auto x = std::make_shared<infini_train::Tensor>(x_tensor.To(device));
-    uint64_t kRngState = kRngState;
+    uint64_t rng_state = kRngState;
     LOG(INFO) << "start generate text:";
     for (int t = prompt_len; t < text_length; t++) {
-        /* ===================================== 作业 =====================================
-        TODO：实现单步文本生成逻辑
-        HINT：调用model.Forward推理获取logits，根据推理结果进行随机采样，调用Decode获取文本结果
-        ===================================== 作业 ===================================== */
+        // 前向传播获取 logits
+        auto outputs = model.Forward({x});
+        auto logits = outputs[0]; // shape: [batch_size, sequence_length, vocab_size]
+
+        // 获取最后一个位置的 logits
+        auto last_logits = logits->Slice(1, t - 1, t, 1); // [batch_size, 1, vocab_size]
+
+        // 将 logits 转换为概率（softmax）
+        auto probs_tensor = nn::function::Softmax(last_logits, /*dim=*/-1);
+
+        // 将结果转回 CPU 进行采样
+        auto probs_cpu = probs_tensor->To(Device(DeviceType::kCPU, 0));
+        float *probs = static_cast<float *>(probs_cpu.DataPtr());
+
+        // 采样下一个 token（这里只取第一个 batch 的结果）
+        float coin = RandomF32(rng_state);
+        int next_token = SampleMult(probs, vocab_size_, coin);
+
+        // 更新输入序列
+        x_buff[t] = next_token;
+
+        // 解码并输出
+        std::string token_str = Decode(next_token);
+        std::cout << token_str;
+        std::cout.flush();
     }
     std::cout << std::endl;
 }
