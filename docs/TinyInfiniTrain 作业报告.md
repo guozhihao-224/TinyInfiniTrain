@@ -172,6 +172,44 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     // TODO：实现张量扁平化操作，将指定维度范围[start, end]内的所有维度合并为一个维度
     // HINT: 
     // =================================== 作业 ===================================
+     // 处理负索引
+    int64_t ndim = dims_.size();
+    if (start < 0) {
+        start += ndim;
+    }
+    if (end < 0) {
+        end += ndim;
+    }
+
+    // 边界检查
+    CHECK_GE(start, 0);
+    CHECK_LT(start, ndim);
+    CHECK_GE(end, 0);
+    CHECK_LT(end, ndim);
+    CHECK_LE(start, end);
+
+    // 计算新的 shape
+    std::vector<int64_t> new_shape;
+
+    // 添加 start 之前的维度
+    for (int64_t i = 0; i < start; ++i) {
+        new_shape.push_back(dims_[i]);
+    }
+
+    // 计算合并后的维度大小
+    int64_t flattened_dim = 1;
+    for (int64_t i = start; i <= end; ++i) {
+        flattened_dim *= dims_[i];
+    }
+    new_shape.push_back(flattened_dim);
+
+    // 添加 end 之后的维度
+    for (int64_t i = end + 1; i < ndim; ++i) {
+        new_shape.push_back(dims_[i]);
+    }
+
+    // 先确保内存连续，然后使用 View
+    return Contiguous()->View(new_shape);
 }
 ```
 
@@ -190,6 +228,73 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
     // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
     // HINT: 
     // =================================== 作业 ===================================
+     // 如果没有梯度函数且不需要梯度，直接返回
+    if (!grad_fn_ && !requires_grad_) {
+        return;
+    }
+
+    // 如果没有提供梯度，创建全 1 的梯度（对标量）
+    if (!gradient) {
+        gradient = std::make_shared<Tensor>(dims_, dtype_, GetDevice());
+        gradient->Fill<float>(1.0f);
+    }
+
+    // 用于拓扑排序的数据结构
+    std::queue<std::shared_ptr<Tensor>> q;
+    std::unordered_set<std::shared_ptr<Tensor>> visited;
+    std::unordered_map<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>> grad_map;
+
+    // 初始化：将当前张量加入队列
+    auto self = const_cast<Tensor*>(this)->shared_from_this();
+    q.push(self);
+    visited.insert(self);
+    grad_map[self] = gradient;
+
+    // BFS 遍历计算图
+    while (!q.empty()) {
+        auto current = q.front();
+        q.pop();
+
+        // 获取当前张量的梯度
+        auto current_grad = grad_map[current];
+
+        // 如果是叶子节点，累加梯度
+        if (current->is_leaf()) {
+            if (current->grad_) {
+                // 累加梯度: grad = grad + current_grad
+                current->grad_ = current->grad_->Add(current_grad);
+            } else {
+                current->grad_ = std::make_shared<Tensor>(*current_grad);
+            }
+            continue;
+        }
+
+        // 如果有梯度函数，调用反向传播
+        if (current->grad_fn_) {
+            auto input_grads = current->grad_fn_->Backward({current_grad});
+
+            // 将梯度传递给输入张量
+            const auto& inputs = current->grad_fn_->saved_tensors();
+            for (size_t i = 0; i < inputs.size() && i < input_grads.size(); ++i) {
+                if (inputs[i]->requires_grad_) {
+                    auto& input = inputs[i];
+
+                    // 累加梯度（多输出场景）
+                    if (grad_map.count(input)) {
+                        grad_map[input] = grad_map[input]->Add(input_grads[i]);
+                    } else {
+                        grad_map[input] = input_grads[i];
+                    }
+
+                    // 如果未访问过，加入队列
+                    if (!visited.count(input)) {
+                        visited.insert(input);
+                        q.push(input);
+                    }
+                }
+            }
+        }
+    }
 }
 ```
 

@@ -304,6 +304,12 @@ std::vector<std::shared_ptr<Tensor>> MulScalar::Forward(const std::vector<std::s
     return {kernel.Call<std::shared_ptr<Tensor>>(input, scalar_)};
 }
 
+void MulScalar::SetupContext(const std::vector<std::shared_ptr<Tensor>> &input_tensors,
+                             const std::vector<std::shared_ptr<Tensor>> &) {
+    const auto &input = input_tensors[0];
+    saved_tensors_ = {input};
+}
+
 std::vector<std::shared_ptr<Tensor>> MulScalar::Backward(const std::vector<std::shared_ptr<Tensor>> &grad_outputs) {
     CHECK_EQ(grad_outputs.size(), 1);
     const auto &grad_output = grad_outputs[0];
