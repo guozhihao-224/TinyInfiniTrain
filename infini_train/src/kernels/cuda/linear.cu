@@ -88,11 +88,23 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
             other_offset = (b % batch_size) * other_stride;
         }
 
-        // C = alpha * A * B + beta * C
-        // cuBLAS 是列优先，需要转置处理
-        // 对于行优先的 A(M,K) * B(K,N) = C(M,N)
-        // 在列优先视角下相当于 B^T(N,K) * A^T(K,M) = C^T(N,M)
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        // 计算 C = A * B
+        // A: M x K (行优先)
+        // B: K x N (行优先)
+        // C: M x N (行优先)
+        // 
+        // cuBLAS 是列优先，所以我们需要转置视角:
+        // C^T = B^T * A^T
+        // C^T: N x M
+        // B^T: N x K
+        // A^T: K x M
+        //
+        // cuBLAS: C = op(A) * op(B)
+        // 我们要计算 C^T(N,M) = B^T(N,K) * A^T(K,M)
+        // 所以: op(A)=B (不转置，因为B本来就是行优先，在列优先视角下就是B^T), op(B)=A^T
+        // m=N, n=M, k=K
+        // lda=N (B 的 leading dim), ldb=K (A 的 leading dim), ldc=N (C 的 leading dim)
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                   N, M, K,
                                   &alpha,
                                   other_ptr + other_offset, N,
@@ -170,7 +182,11 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
 
         // grad_input = grad_output @ other^T
         // dy (M,N) @ w^T (N,K) -> dx (M,K)
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        // 行优先: dy[M,N] * other^T[N,K] -> grad_input[M,K]
+        // 列优先视角: grad_input^T(K,M) = other(K,N) * dy^T(N,M)
+        // op(A)=other (不转置), op(B)=dy^T
+        // m=K, n=M, k=N
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                   K, M, N,
                                   &alpha,
                                   other_ptr + other_offset, N,
@@ -180,7 +196,11 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
 
         // grad_other = input^T @ grad_output
         // x^T (K,M) @ dy (M,N) -> dw (K,N)
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        // 行优先: input^T[K,M] * dy[M,N] -> grad_other[K,N]
+        // 列优先视角: grad_other^T(N,K) = dy^T(N,M) * input(M,K)
+        // op(A)=dy^T, op(B)=input (不转置)
+        // m=N, n=K, k=M
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                                   N, K, M,
                                   &alpha,
                                   grad_output_ptr + b * output_stride, N,
