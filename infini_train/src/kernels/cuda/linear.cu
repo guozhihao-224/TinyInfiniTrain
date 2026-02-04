@@ -23,6 +23,21 @@ namespace infini_train::kernels::cuda {
         }                                                                                                              \
     } while (0)
 
+// 朴素矩阵乘法 CUDA kernel
+__global__ void MatmulForwardKernel(const float *A, const float *B, float *C, 
+                                     int M, int N, int K) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < M && col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < K; ++k) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
 std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other) {
     const auto &input_dims = input->Dims();
     const auto &other_dims = other->Dims();
@@ -62,7 +77,7 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32, input->GetDevice());
     output->Fill<float>(0.0f);
 
-    // 使用 cuBLAS 进行矩阵乘法
+    // 使用朴素 CUDA kernel 进行矩阵乘法
     const float *input_ptr = static_cast<const float *>(input->DataPtr());
     const float *other_ptr = static_cast<const float *>(other->DataPtr());
     float *output_ptr = static_cast<float *>(output->DataPtr());
@@ -71,11 +86,9 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     int64_t other_stride = K * N;
     int64_t output_stride = M * N;
 
-    cublasHandle_t handle;
-    CUBLAS_CHECK(cublasCreate(&handle));
-
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
+    // 配置 CUDA kernel
+    dim3 block_size(16, 16);
+    dim3 grid_size((N + block_size.x - 1) / block_size.x, (M + block_size.y - 1) / block_size.y);
 
     for (int64_t b = 0; b < batch_size; ++b) {
         int64_t input_offset = 0;
@@ -88,33 +101,46 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
             other_offset = (b % batch_size) * other_stride;
         }
 
-        // 计算 C = A * B
-        // A: M x K (行优先)
-        // B: K x N (行优先)
-        // C: M x N (行优先)
-        // 
-        // cuBLAS 是列优先，所以我们需要转置视角:
-        // C^T = B^T * A^T
-        // C^T: N x M
-        // B^T: N x K
-        // A^T: K x M
-        //
-        // cuBLAS: C = op(A) * op(B)
-        // 我们要计算 C^T(N,M) = B^T(N,K) * A^T(K,M)
-        // 所以: op(A)=B (不转置，因为B本来就是行优先，在列优先视角下就是B^T), op(B)=A^T
-        // m=N, n=M, k=K
-        // lda=N (B 的 leading dim), ldb=K (A 的 leading dim), ldc=N (C 的 leading dim)
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-                                  N, M, K,
-                                  &alpha,
-                                  other_ptr + other_offset, N,
-                                  input_ptr + input_offset, K,
-                                  &beta,
-                                  output_ptr + b * output_stride, N));
+        // 启动 kernel
+        MatmulForwardKernel<<<grid_size, block_size>>>(
+            input_ptr + input_offset,
+            other_ptr + other_offset,
+            output_ptr + b * output_stride,
+            M, N, K
+        );
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    CUBLAS_CHECK(cublasDestroy(handle));
     return output;
+}
+
+// 梯度计算 CUDA kernel
+__global__ void GradInputKernel(const float *dy, const float *w, float *dx, 
+                                 int M, int K, int N) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < M && col < K) {
+        float sum = 0.0f;
+        for (int k = 0; k < N; ++k) {
+            sum += dy[row * N + k] * w[col * N + k];  // w^T
+        }
+        dx[row * K + col] = sum;
+    }
+}
+
+__global__ void GradOtherKernel(const float *x, const float *dy, float *dw, 
+                                 int K, int N, int M) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < K && col < N) {
+        float sum = 0.0f;
+        for (int i = 0; i < M; ++i) {
+            sum += x[i * K + row] * dy[i * N + col];
+        }
+        dw[row * N + col] = sum;
+    }
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
@@ -163,11 +189,10 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
     int64_t other_stride = K * N;
     int64_t output_stride = M * N;
 
-    cublasHandle_t handle;
-    CUBLAS_CHECK(cublasCreate(&handle));
-
-    const float alpha = 1.0f;
-    const float beta = 1.0f;  // 累加模式
+    // 配置 CUDA kernel
+    dim3 block_size(16, 16);
+    dim3 grid_size_grad_input((K + block_size.x - 1) / block_size.x, (M + block_size.y - 1) / block_size.y);
+    dim3 grid_size_grad_other((N + block_size.x - 1) / block_size.x, (K + block_size.y - 1) / block_size.y);
 
     for (int64_t b = 0; b < batch_size; ++b) {
         int64_t input_offset = 0;
@@ -181,35 +206,24 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
         }
 
         // grad_input = grad_output @ other^T
-        // dy (M,N) @ w^T (N,K) -> dx (M,K)
-        // 行优先: dy[M,N] * other^T[N,K] -> grad_input[M,K]
-        // 列优先视角: grad_input^T(K,M) = other(K,N) * dy^T(N,M)
-        // op(A)=other (不转置), op(B)=dy^T
-        // m=K, n=M, k=N
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-                                  K, M, N,
-                                  &alpha,
-                                  other_ptr + other_offset, N,
-                                  grad_output_ptr + b * output_stride, N,
-                                  &beta,
-                                  grad_input_ptr + input_offset, K));
+        GradInputKernel<<<grid_size_grad_input, block_size>>>(
+            grad_output_ptr + b * output_stride,
+            other_ptr + other_offset,
+            grad_input_ptr + input_offset,
+            M, K, N
+        );
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         // grad_other = input^T @ grad_output
-        // x^T (K,M) @ dy (M,N) -> dw (K,N)
-        // 行优先: input^T[K,M] * dy[M,N] -> grad_other[K,N]
-        // 列优先视角: grad_other^T(N,K) = dy^T(N,M) * input(M,K)
-        // op(A)=dy^T, op(B)=input (不转置)
-        // m=N, n=K, k=M
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-                                  N, K, M,
-                                  &alpha,
-                                  grad_output_ptr + b * output_stride, N,
-                                  input_ptr + input_offset, K,
-                                  &beta,
-                                  grad_other_ptr + other_offset, N));
+        GradOtherKernel<<<grid_size_grad_other, block_size>>>(
+            input_ptr + input_offset,
+            grad_output_ptr + b * output_stride,
+            grad_other_ptr + other_offset,
+            K, N, M
+        );
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    CUBLAS_CHECK(cublasDestroy(handle));
     return {grad_input, grad_other};
 }
 
