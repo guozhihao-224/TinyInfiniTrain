@@ -1,4 +1,5 @@
 #include "cublas_v2.h"
+#include "cuda_runtime.h"
 #include "glog/logging.h"
 #include <cub/block/block_reduce.cuh>
 
@@ -23,6 +24,12 @@ namespace infini_train::kernels::cuda {
         }                                                                                                              \
     } while (0)
 
+// 辅助函数：设置正确的 CUDA 设备
+inline void SetCudaDevice(const std::shared_ptr<Tensor>& tensor) {
+    int device_id = static_cast<int>(tensor->GetDevice().Index());
+    CUDA_CHECK(cudaSetDevice(device_id));
+}
+
 // 朴素矩阵乘法 CUDA kernel
 __global__ void MatmulForwardKernel(const float *A, const float *B, float *C, 
                                      int M, int N, int K) {
@@ -39,6 +46,9 @@ __global__ void MatmulForwardKernel(const float *A, const float *B, float *C,
 }
 
 std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other) {
+    // 设置正确的 CUDA 设备
+    SetCudaDevice(input);
+    
     const auto &input_dims = input->Dims();
     const auto &other_dims = other->Dims();
 
@@ -146,6 +156,9 @@ __global__ void GradOtherKernel(const float *x, const float *dy, float *dw,
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
 MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other,
                const std::shared_ptr<Tensor> &grad_output) {
+    // 设置正确的 CUDA 设备
+    SetCudaDevice(grad_output);
+    
     const auto &input_dims = input->Dims();
     const auto &other_dims = other->Dims();
 
