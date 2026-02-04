@@ -92,33 +92,32 @@ TinyShakespeareFile ReadTinyShakespeareFile(const std::string &path, size_t sequ
 
     // 创建 Tensor: [num_samples, sequence_length, 2]
     // 最后一维 2 表示 [input_token, target_token]
+    // 使用 int64 类型，因为 GPT-2 的 Embedding 层期望 int64 输入
     file.dims = {static_cast<int64_t>(num_samples),
                  static_cast<int64_t>(sequence_length),
                  2};
 
-    infini_train::DataType dtype = kTypeToDataType.at(file.type);
-    file.tensor = infini_train::Tensor(file.dims, dtype,
+    file.tensor = infini_train::Tensor(file.dims, infini_train::DataType::kINT64,
                                        infini_train::Device(infini_train::DeviceType::kCPU, 0));
 
     // 填充数据
+    int64_t *tensor_data = static_cast<int64_t *>(file.tensor.DataPtr());
     if (file.type == TinyShakespeareType::kUINT16) {
-        uint16_t *tensor_data = static_cast<uint16_t *>(file.tensor.DataPtr());
         const uint16_t *token_data = reinterpret_cast<const uint16_t *>(data_bytes.data());
         for (size_t sample = 0; sample < num_samples; ++sample) {
             for (size_t pos = 0; pos < sequence_length; ++pos) {
                 size_t idx = sample * sequence_length + pos;
-                tensor_data[(sample * sequence_length + pos) * 2 + 0] = token_data[idx];
-                tensor_data[(sample * sequence_length + pos) * 2 + 1] = token_data[idx + 1];
+                tensor_data[(sample * sequence_length + pos) * 2 + 0] = static_cast<int64_t>(token_data[idx]);
+                tensor_data[(sample * sequence_length + pos) * 2 + 1] = static_cast<int64_t>(token_data[idx + 1]);
             }
         }
     } else {
-        uint32_t *tensor_data = static_cast<uint32_t *>(file.tensor.DataPtr());
         const uint32_t *token_data = reinterpret_cast<const uint32_t *>(data_bytes.data());
         for (size_t sample = 0; sample < num_samples; ++sample) {
             for (size_t pos = 0; pos < sequence_length; ++pos) {
                 size_t idx = sample * sequence_length + pos;
-                tensor_data[(sample * sequence_length + pos) * 2 + 0] = token_data[idx];
-                tensor_data[(sample * sequence_length + pos) * 2 + 1] = token_data[idx + 1];
+                tensor_data[(sample * sequence_length + pos) * 2 + 0] = static_cast<int64_t>(token_data[idx]);
+                tensor_data[(sample * sequence_length + pos) * 2 + 1] = static_cast<int64_t>(token_data[idx + 1]);
             }
         }
     }

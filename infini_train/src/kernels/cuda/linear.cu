@@ -24,25 +24,172 @@ namespace infini_train::kernels::cuda {
     } while (0)
 
 std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other) {
-    // =================================== 作业 ===================================
-    // TODO：实现CUDA上的矩阵乘法前向计算
-    // REF:
-    // =================================== 作业 ===================================
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
 
-    auto output = std::make_shared<Tensor>();
+    // 获取维度
+    int64_t M = input_dims[input_dims.size() - 2];
+    int64_t K = input_dims[input_dims.size() - 1];
+    int64_t N = other_dims[other_dims.size() - 1];
+
+    // 计算 batch 维度
+    std::vector<int64_t> batch_dims;
+    int64_t batch_size = 1;
+
+    int input_batch_rank = input_dims.size() - 2;
+    int other_batch_rank = other_dims.size() - 2;
+    int max_batch_rank = std::max(input_batch_rank, other_batch_rank);
+
+    for (int i = 0; i < max_batch_rank; ++i) {
+        int64_t dim = 1;
+        if (i < input_batch_rank) {
+            dim = input_dims[i];
+        }
+        if (i < other_batch_rank) {
+            if (other_dims[i] != 1 && dim != 1 && other_dims[i] != dim) {
+                LOG(FATAL) << "Incompatible batch dimensions for matmul";
+            }
+            dim = std::max(dim, other_dims[i]);
+        }
+        batch_dims.push_back(dim);
+        batch_size *= dim;
+    }
+
+    // 创建输出张量
+    std::vector<int64_t> output_dims = batch_dims;
+    output_dims.push_back(M);
+    output_dims.push_back(N);
+    auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32, input->GetDevice());
+    output->Fill<float>(0.0f);
+
+    // 使用 cuBLAS 进行矩阵乘法
+    const float *input_ptr = static_cast<const float *>(input->DataPtr());
+    const float *other_ptr = static_cast<const float *>(other->DataPtr());
+    float *output_ptr = static_cast<float *>(output->DataPtr());
+
+    int64_t input_stride = M * K;
+    int64_t other_stride = K * N;
+    int64_t output_stride = M * N;
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    for (int64_t b = 0; b < batch_size; ++b) {
+        int64_t input_offset = 0;
+        int64_t other_offset = 0;
+
+        if (input_batch_rank > 0) {
+            input_offset = (b % batch_size) * input_stride;
+        }
+        if (other_batch_rank > 0) {
+            other_offset = (b % batch_size) * other_stride;
+        }
+
+        // C = alpha * A * B + beta * C
+        // cuBLAS 是列优先，需要转置处理
+        // 对于行优先的 A(M,K) * B(K,N) = C(M,N)
+        // 在列优先视角下相当于 B^T(N,K) * A^T(K,M) = C^T(N,M)
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+                                  N, M, K,
+                                  &alpha,
+                                  other_ptr + other_offset, N,
+                                  input_ptr + input_offset, K,
+                                  &beta,
+                                  output_ptr + b * output_stride, N));
+    }
+
+    CUBLAS_CHECK(cublasDestroy(handle));
     return output;
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
 MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other,
                const std::shared_ptr<Tensor> &grad_output) {
-    // =================================== 作业 ===================================
-    // TODO：实现CUDA上的矩阵乘法反向传播
-    // REF:
-    // =================================== 作业 ===================================
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
+    int64_t M = input_dims[input_dims.size() - 2];
+    int64_t K = input_dims[input_dims.size() - 1];
+    int64_t N = other_dims[other_dims.size() - 1];
+
+    // 计算 batch 维度
+    std::vector<int64_t> batch_dims;
+    int64_t batch_size = 1;
+
+    int input_batch_rank = input_dims.size() - 2;
+    int other_batch_rank = other_dims.size() - 2;
+    int max_batch_rank = std::max(input_batch_rank, other_batch_rank);
+
+    for (int i = 0; i < max_batch_rank; ++i) {
+        int64_t dim = 1;
+        if (i < input_batch_rank) {
+            dim = input_dims[i];
+        }
+        if (i < other_batch_rank) {
+            dim = std::max(dim, other_dims[i]);
+        }
+        batch_dims.push_back(dim);
+        batch_size *= dim;
+    }
+
+    // 创建梯度张量
+    auto grad_input = std::make_shared<Tensor>(input_dims, DataType::kFLOAT32, grad_output->GetDevice());
+    auto grad_other = std::make_shared<Tensor>(other_dims, DataType::kFLOAT32, grad_output->GetDevice());
+    grad_input->Fill<float>(0.0f);
+    grad_other->Fill<float>(0.0f);
+
+    const float *grad_output_ptr = static_cast<const float *>(grad_output->DataPtr());
+    const float *input_ptr = static_cast<const float *>(input->DataPtr());
+    const float *other_ptr = static_cast<const float *>(other->DataPtr());
+    float *grad_input_ptr = static_cast<float *>(grad_input->DataPtr());
+    float *grad_other_ptr = static_cast<float *>(grad_other->DataPtr());
+
+    int64_t input_stride = M * K;
+    int64_t other_stride = K * N;
+    int64_t output_stride = M * N;
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    const float alpha = 1.0f;
+    const float beta = 1.0f;  // 累加模式
+
+    for (int64_t b = 0; b < batch_size; ++b) {
+        int64_t input_offset = 0;
+        int64_t other_offset = 0;
+
+        if (input_batch_rank > 0) {
+            input_offset = (b % batch_size) * input_stride;
+        }
+        if (other_batch_rank > 0) {
+            other_offset = (b % batch_size) * other_stride;
+        }
+
+        // grad_input = grad_output @ other^T
+        // dy (M,N) @ w^T (N,K) -> dx (M,K)
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                  K, M, N,
+                                  &alpha,
+                                  other_ptr + other_offset, N,
+                                  grad_output_ptr + b * output_stride, N,
+                                  &beta,
+                                  grad_input_ptr + input_offset, K));
+
+        // grad_other = input^T @ grad_output
+        // x^T (K,M) @ dy (M,N) -> dw (K,N)
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                                  N, K, M,
+                                  &alpha,
+                                  grad_output_ptr + b * output_stride, N,
+                                  input_ptr + input_offset, K,
+                                  &beta,
+                                  grad_other_ptr + other_offset, N));
+    }
+
+    CUBLAS_CHECK(cublasDestroy(handle));
     return {grad_input, grad_other};
 }
 
