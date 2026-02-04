@@ -15,13 +15,10 @@ public:
     template <typename FuncT> explicit KernelFunction(FuncT &&func) : func_ptr_(reinterpret_cast<void *>(func)) {}
 
     template <typename RetT, class... ArgsT> RetT Call(ArgsT... args) const {
-        // =================================== 作业 ===================================
-        // TODO：实现通用kernel调用接口
-        // 功能描述：将存储的函数指针转换为指定类型并调用
-        // =================================== 作业 ===================================
-
         using FuncT = RetT (*)(ArgsT...);
-        // TODO: 实现函数调用逻辑
+        auto func = reinterpret_cast<FuncT>(func_ptr_);
+        CHECK(func != nullptr) << "Kernel function pointer is null";
+        return func(std::forward<ArgsT>(args)...);
     }
 
 private:
@@ -44,19 +41,22 @@ public:
     }
 
     template <typename FuncT> void Register(const KeyT &key, FuncT &&kernel) {
-        // =================================== 作业 ===================================
-        // TODO：实现kernel注册机制
-        // 功能描述：将kernel函数与设备类型、名称绑定
-        // =================================== 作业 ===================================
+        CHECK(!key_to_kernel_map_.contains(key))
+            << "Kernel already registered: " << key.second << " on device: " << static_cast<int>(key.first);
+        key_to_kernel_map_.emplace(key, KernelFunction(std::forward<FuncT>(kernel)));
     }
 
 private:
     std::map<KeyT, KernelFunction> key_to_kernel_map_;
 };
+
 } // namespace infini_train
 
+#define INF_TINYINF_TRAIN_CONCAT_INNER(a, b) a##b
+#define INF_TINYINF_TRAIN_CONCAT(a, b) INF_TINYINF_TRAIN_CONCAT_INNER(a, b)
+
 #define REGISTER_KERNEL(device, kernel_name, kernel_func)                                                              \
-    // =================================== 作业 ===================================
-    // TODO：实现自动注册宏
-    // 功能描述：在全局静态区注册kernel，避免显式初始化代码
-    // =================================== 作业 ===================================
+    const auto INF_TINYINF_TRAIN_CONCAT(_kernel_reg_, __COUNTER__) = []() {                                            \
+        ::infini_train::Dispatcher::Instance().Register({(device), #kernel_name}, (kernel_func));                      \
+        return 0;                                                                                                      \
+    }();
